@@ -22,7 +22,7 @@ crun_envdir = os.getenv('CRUN_ENVDIR', "mtv_integrated_tb")
 sys.path.append(mtv_lib + "/" + crun_envdir)
 
 from mtve_headers  import *
-from FpgaSemaphore import *
+from utils.mtvelib.FpgaSemaphore import *
 
 
 class MtveLabRunner(object):
