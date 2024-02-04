@@ -1,0 +1,469 @@
+#!/usr/bin/env python3
+
+import os
+import sys
+import stat
+import pwd
+import subprocess
+import argparse
+import logging
+import socket
+import getpass
+import hjson
+import inspect
+import pickle
+
+from pathlib import Path
+from datetime import datetime
+from multiprocessing.connection import Client
+
+mtv_lib   = os.getenv('MTV_LIB', "")
+crun_envdir = os.getenv('CRUN_ENVDIR', "mtv_integrated_tb")
+sys.path.append(mtv_lib + "/" + crun_envdir)
+
+from mtve_headers  import *
+from FpgaSemaphore import *
+
+
+class MtveLabRunner(object):
+
+    def __init__(self, fpga, cfg_file, qname, qenabled=False, timeout=60):
+        self.fpga = fpga
+        self.cfg_file = cfg_file
+        self.qenabled = qenabled
+        self.queue_state = str(qname) + '-cfg'
+        self.static_cfg  = str(qname) + '-stat_cfg'
+        self.timeout = timeout
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.DEBUG)
+        self.fpga_image = 'undefined'
+        self.nvm_image  = 'undefined'
+        self.burner_ip   = 'burner_ip'
+        self.burner_port = 53533
+        self.AUTH_KEY    = b'NVM secret password :)'
+        self.run_time_nvm_image  = False
+        self.run_time_fpga_image = False
+        
+        self.semaphore = FpgaSemaphore(queue_file=qname)
+
+
+    def __reset(self, cfg_file):
+        self.logger.info(f"Resetting FPGA platform: {self.fpga}")
+        command = ["profpga_run", cfg_file, "--sync-events"]
+        self.logger.debug(f'reset command: {command}')
+        subprocess.run(command)
+        self.logger.info(f'FPGA reset completed')
+
+        
+    def __poweroff(self):
+        print('shutting down fpga module...')
+        command = ['profpga_run', self.cfg_file, '-d']
+        subprocess.run(command)
+        
+    
+    def __run_test(self, pytest, fake=False):
+        child_processes = []
+        pytest_command = pytest.split()
+        
+        try:
+            pytest_proc = subprocess.Popen(pytest_command)
+            child_processes.append(pytest_proc)  # remember child process
+
+            # Set a timer to kill the process after timeout
+            def terminate_test(proc, timeout): 
+                if timeout:
+                    logger.critical(f'Timeout reached {timeout/60}[m]. Terminating process [{args.test_cmd}].')
+                    proc.terminate()
+                else:
+                    logger.info('Timeout is disabled by command line. Test will not be terminated.')
+
+            timer = threading.Timer(self.timeout, terminate_test, args=[pytest_proc, self.timeout])
+            timer.start()
+            
+        except Exception as e:
+            logger.critical(f'python test execution failed. {e}')
+            return 0
+
+        self.logger.info(f'pyTest command: [{args.test_cmd}] [pid:{pytest_proc.pid}]')
+        self.logger.info(f"Connecting to fpga platform")
+        if fake:
+            command = ['mtve_run_fpga', '-q']
+        else:
+            command = ['mtve_run_fpga', '-c', cfg_file]
+        self.logger.debug(f'fpga run command: {command}')
+        res = subprocess.run(command)
+
+        # Wait for process to finish and cancel the timer
+        pytest_proc.wait()
+        timer.cancel()
+
+
+    def __fpga_program(self, cfg_file, logfile=sys.stdout):
+        # command = ['profpga_run', cfg_file, '-u', '| tee', logfile]
+        # res = subprocess.run(command)
+
+        command = ['profpga_run', cfg_file, '-u']
+        with open(logfile, 'w') as f:
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, universal_newlines=True)
+            while True:
+                output = process.stdout.readline()
+                print(output, end='')  # print to stdout
+                f.write(output)  # write to file
+                # Break the loop if process is done
+                if process.poll() is not None:
+                    break
+            # Ensure all remaining output is read
+            output, _ = process.communicate()
+            print(output, end='')
+            f.write(output)
+
+
+
+    def __log_cfg_change(self, fpga_image, nvm_image):
+        if not fpga_image:
+            fpga_image = self.fpga_image
+        if not nvm_image:
+            nvm_image = self.nvm_image
+            
+        state = {
+            'nvm_image'  : nvm_image,
+            'proj'       : os.environ.get('PRJ'),
+            'user'       : getpass.getuser(),
+            'fpga_image' : fpga_image,
+        }
+        saved_umask = os.umask(0)
+        os.umask(MTVE_GLOBALS.SHARED_FILE_PERMISSIONS)
+        with open(self.queue_state, 'w') as f:
+            f.write(hjson.dumps(state) + '\n')
+        os.umask(saved_umask)
+        
+
+    def __nvm_program(self, nvm_image):
+        self.logger.info(f"Programming NVM by: {nvm_image}")
+        self.__poweroff()
+        item2send = {'nvm_image' : nvm_image}
+        conn = Client((self.burner_ip, self.burner_port), authkey=self.AUTH_KEY)
+        conn.send(pickle.dumps(item2send))
+        status = conn.recv()
+        conn.send('close connection')
+        conn.close()
+        if status == 0:
+            self.logger.info(f"Programmed successfully")
+        else:
+            raise Exception('NVM Progrmming failed')
+
+        
+    def get_uid(self, cmd):
+        cwd = os.getcwd()
+        username = getpass.getuser()
+        hostname = socket.gethostname()
+        now = datetime.now().strftime("%d/%m %H:%M:%S")
+        #return f'[{name}][{now}] {username}@{hostname}:{cwd}'
+        rid = {
+            'user': username,
+            'cmd' : cmd,
+            'time': now,
+            'host': hostname,
+            'mtv' : MTVE_GLOBALS.MTV_VERSION,
+            'prj' : MTVE_GLOBALS.PRJ,
+        }
+    
+        if cmd == 'nvm_program' or self.run_time_nvm_image:
+            rid['nvm_image'] = self.nvm_image
+        elif cmd == 'fpga_program' or self.run_time_fpga_image:
+            rid['fpga_program'] = self.fpga_image
+        else:
+            rid['cwd'] = cwd
+            
+        return rid
+
+    
+    def nvm_program(self, nvm_image, fpga_image):
+        self.run_atomic([
+            [self.__nvm_program, nvm_image],
+            [self.__log_cfg_change, fpga_image, nvm_image]
+        ])
+        
+        
+    def fpga_program(self, cfg_file, logfile, fpga_image):
+        self.fpga_image = fpga_image
+        self.run_atomic([
+            [self.__fpga_program, cfg_file, logfile],
+            [self.__log_cfg_change, fpga_image, None]
+        ])
+
+
+    def reset(self, cfg_file=MTVE_GLOBALS.FPGA_LAB_CFG_FILE):
+        self.run_atomic([[self.__reset, cfg_file]])
+        
+        
+    def run_test(self, test_cmd, fpga_image, nvm_image, logfile):
+        atomic_sequence = []
+            
+        if nvm_image:
+            atomic_sequence.append([self.__nvm_program, nvm_image])
+            self.nvm_image = nvm_image
+            self.run_time_nvm_image = True
+        if fpga_image:
+            self.run_time_fpga_image = True
+            self.fpga_image = fpga_image
+            atomic_sequence.append([self.__fpga_program, cfg_file, logfile])
+        if nvm_image or fpga_image: # configuration changed
+            atomic_sequence.append([self.__log_cfg_change, fpga_image, nvm_image])
+        else:                   # if FPGA wasn't programmed reset is needed
+            atomic_sequence.append([self.__reset, MTVE_GLOBALS.FPGA_LAB_CFG_FILE])
+
+        atomic_sequence.append([self.__run_test, test_cmd])
+        self.logger.debug(atomic_sequence)
+        self.run_atomic(atomic_sequence)
+
+
+    def poweroff(self):
+        self.run_atomic([[self.__poweroff]])
+
+        
+
+    def run_atomic(self, funcs):
+        if self.qenabled:
+            caller_name = inspect.stack()[1].function
+            semaphore_id = self.get_uid(caller_name)
+            # A blocking semaphore call:
+            self.semaphore.get(semaphore_id)
+            # machine is locked for me
+            try:
+                for func_list in funcs:
+                    func = func_list[0]
+                    args = func_list[1:]
+                    self.logger.info(f'call function:{func},args={args}')
+                    func(*args)
+            except Exception as e:
+                self.logger.critical(e)
+            finally:
+                release_msg = self.get_uid(caller_name)
+                self.semaphore.release(id=semaphore_id, release_msg=release_msg)
+        else:
+            for func_list in funcs:
+                func = func_list[0]
+                args = func_list[1:]
+                func(*args)
+
+            
+################################################################################
+
+if __name__ == "__main__":
+
+    import signal
+    import threading
+
+    QUEUING = True
+    
+    logging.basicConfig(format='%(levelname)s - %(module)s.%(funcName)s - %(message)s')
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
+
+    def patch_template_file(infile, outfile, patch_list):
+        with open(infile, 'r') as f:
+            data = f.read()
+        for patch_item in patch_list:
+            logger.debug(f'patching config file {patch_item}')
+            data = data.replace(patch_item['from'], patch_item['to'])
+        with open(outfile, 'w') as f:
+            f.write(data)
+
+
+    err_string   = 'run setup!!!'
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-fpga_name', type=str, metavar='name_or_IP',
+                        default=os.environ.get('MTV_SYSTEM_NAME', err_string),
+                        help='Specifies profpga system IP address.')
+    parser.add_argument('-cfg_template', type=str,
+                        default=os.environ.get('MTV_CONFIG_TEMPLATE', err_string),
+                        help='Specifies profpga system config file template to be patched by IP address')
+    parser.add_argument('-test_cmd', type=str,
+                        default=os.environ.get('CRUN_PYTEST_COMMAND'),
+                        help='Specify python test command')
+    parser.add_argument('-fpga_program', type=str,
+                        default=os.environ.get('CRUN_FPGA_IMAGE'),
+                        help='Programing FPGA by specified image file.')
+    parser.add_argument('-reset', action='store_true',
+                        help='Reset whole FPGA module.')
+    parser.add_argument('-poweroff', action='store_true',
+                        help='Shutdown the FPGA module. Burning process will be needed.')
+    parser.add_argument('-timeout', type=float,
+                        default=1,
+                        help='python test timeout in minutes')
+    parser.add_argument('-build', action='store_true',
+                        help='build all mtv sources (similar to crun build), but without rtl compilation')
+    parser.add_argument('-dequeue', action='store_true',
+                        help='remove user self job from head of execution queue')
+    parser.add_argument('-nvm_program', type=str,
+                        default=os.environ.get('CRUN_NVM_IMAGE'),
+                        help='Specifies nvm image to programm')
+    parser.add_argument('-add_queue', type=str,
+                        help='Add new queue to the system [profpga_bXXXXXX]')
+    parser.add_argument('-burner_ip', type=str,
+                        help='Buerner IP/Name address for -add_queue option')
+
+    args = parser.parse_args()
+
+    hostname = socket.gethostbyaddr(args.fpga_name)[0]
+    qname = Path(MTVE_GLOBALS.FPGA_QUEUE_DIR) / (MTVE_GLOBALS.FPGA_QUEUE_BASE_NAME + ':' + hostname)
+    cfg_file = MTVE_GLOBALS.FPGA_LAB_CFG_FILE
+    timeout = args.timeout * 60 # in sec
+    
+    if args.add_queue:
+        hostname = socket.gethostbyaddr(args.add_queue)[0]
+        qname = Path(MTVE_GLOBALS.FPGA_QUEUE_DIR) / (MTVE_GLOBALS.FPGA_QUEUE_BASE_NAME + ':' + hostname)
+
+        if os.access(qname, os.R_OK):
+            logger.error(f'Queue: {qname} already exists.')
+        else:
+            os.umask(0)
+            stat_cfg = '-stat_cfg'
+            for fs in ['', '-cfg', '.log', stat_cfg]:
+                file_path = str(qname) + fs
+                fd = os.open(file_path, os.O_CREAT | os.O_WRONLY, MTVE_GLOBALS.SHARED_FILE_PERMISSIONS)
+                if fs == stat_cfg and args.burner_ip:
+                    os.write(fd, f'{{\n  burner_ip : {args.burner_ip}\n}}'.encode())
+                os.close(fd)
+        exit(0)
+    if args.burner_ip:       # just add burner to queue
+        if not os.access(qname, os.R_OK):
+            logger.error(f"Queue: {qname} doens't exists.")
+            exit(-1)
+        else:
+            os.umask(0)
+            stat_cfg = '-stat_cfg'
+            file_path = str(qname) + stat_cfg
+            if os.access(file_path, os.R_OK):
+                logger.error(f"Already set. Quitting.")
+                exit(-1)
+            fd = os.open(file_path, os.O_CREAT | os.O_WRONLY, MTVE_GLOBALS.SHARED_FILE_PERMISSIONS)
+            os.write(fd, f'{{\n  burner_ip : {args.burner_ip}\n}}'.encode())
+            os.close(fd)
+        exit(0)
+  
+        
+    runner = MtveLabRunner(fpga=hostname, cfg_file=cfg_file,
+                           qname=qname, qenabled=QUEUING, timeout=timeout)
+
+    def get_last_images():
+        with open(runner.queue_state, 'r') as hjson_file:
+            cfg = hjson.load(hjson_file)
+        fpga_image = cfg.get('fpga_image', cfg.get('image', 'N/A')) # 'image' for old cfg version
+        nvm_image  = cfg.get('nvm_image', 'N/A')
+        return(nvm_image, fpga_image)
+    
+    def load_static_configs(runner):
+        try:
+            with open(runner.static_cfg, 'r') as hjson_file:
+                cfg = hjson.load(hjson_file)
+                runner.burner_ip = cfg.get('burner_ip', 'N/A')
+        except Exception as e:
+            runner.burner_ip = 'N/A'
+
+    def init_image_file(image_type, base_dir, version, suffix):
+        image_file = str(Path(base_dir) / Path(version) / Path(suffix))
+        if os.access(image_file, os.R_OK): # image ok as search path
+            pass
+        elif os.access(version, os.R_OK):  # image ok as full path 
+            image_file = version
+        else:                   # no image specified return latest
+            return False
+        return image_file
+    
+    def signal_handler(signal, frame):
+        os.umask(MTVE_GLOBALS.SHARED_FILE_PERMISSIONS)
+        logger.critical("Signal handler in action") # will not be printed as father already in exception
+        with open("kill.log", 'w') as f:
+            f.write(f'Got interrupt. Cleaning semaphore...\n')
+            os.chmod('kill.log', 0o755)
+            try:
+                res = runner.semaphore.dequeue(interrupt=True)
+                f.write(f'{res}\n')
+            except Exception as e:
+                f.write(f'Semaphore cleanup failed :( : {e}\n')
+        exit (0)
+
+    signal.signal(signal.SIGINT,  signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    fpga_image = os.environ.get('FPGA_RUNTIME_IMAGE', False)
+    program_config = os.environ.get('MTV_LIB', 'run_setup!!!')
+    program_log    = program_config
+    program_config += MTVE_GLOBALS.FPGA_PROGRAM_CONFIG
+    program_log    = Path(program_log) / MTVE_GLOBALS.FPGA_PROGRAM_LOG
+
+    nvm_image, fpga_image = get_last_images()
+    runner.fpga_image = fpga_image
+    runner.nvm_image  = nvm_image
+    load_static_configs(runner)
+
+    # conn = Client(('127.0.0.1', 61111), authkey=b'NVM secret password :)')
+    # logger.debug(f"connected")
+    # item2send = {'nvm_image' : nvm_image}
+    # conn.send(pickle.dumps(item2send))
+    # status = conn.recv()
+    # conn.send('close connection')
+    # conn.close()
+    
+    if args.nvm_program:
+        nvm_image = init_image_file('nmv_image', base_dir='TBD', version=args.nvm_program, suffix='TBD')
+        if not nvm_image:
+            logger.critical(f'ERROR: nvm_image file is not readable: [{args.nvm_program}]')
+            exit(0)
+            
+    if args.fpga_program:
+        fpga_image = init_image_file('fpga_image', base_dir=MTVE_GLOBALS.MTV_SYN_ROOT,
+                                     version=args.fpga_program, suffix=MTVE_GLOBALS.MTV_SYN_IMAGE_OFFSET)
+        if not fpga_image:
+            logger.critical(f'ERROR: fpga_image file is not readable: [{args.fpgaimage}]')
+            exit(0)
+
+    
+    patch_template_file(args.cfg_template, program_config,
+                        [
+                            {'from': MTVE_GLOBALS.FPGA_CFG_TEMPLATE_IP,    'to':hostname},
+                            {'from': MTVE_GLOBALS.FPGA_CFG_TEMPLATE_IMAGE, 'to':fpga_image},
+                        ])
+    patch_template_file(args.cfg_template, cfg_file,
+                        [{'from': MTVE_GLOBALS.FPGA_CFG_TEMPLATE_IP,    'to':hostname},
+                         {'from': MTVE_GLOBALS.FPGA_CFG_TEMPLATE_IMAGE, 'to':fpga_image}])
+
+
+    if args.test_cmd:
+        if args.nvm_program:
+            runner.run_test(test_cmd=args.test_cmd, fpga_image=fpga_image, nvm_image=nvm_image,
+                            logfile=program_log)
+        elif args.fpga_program:
+            runner.run_test(test_cmd=args.test_cmd, fpga_image=fpga_image, nvm_image=False,
+                            logfile=program_log)
+        else:
+            runner.run_test(test_cmd=args.test_cmd, fpga_image=False, nvm_image=False,
+                            logfile=program_log)
+    elif args.nvm_program:
+        runner.nvm_program(nvm_image=nvm_image, fpga_image=fpga_image)
+        
+    elif args.fpga_program:
+        runner.fpga_program(cfg_file=program_config, logfile=program_log, fpga_image=fpga_image)
+
+    elif args.reset:
+        runner.reset(cfg_file)
+
+    elif args.poweroff:
+        logger.critical(f'This will shutdown fpga: {args.fpga_name}')
+        print(f'Are you sure: Yes/No?')
+        answer = sys.stdin.readline()
+        if answer.strip() == 'Yes': 
+            runner.poweroff()
+        else:
+            print('cancelling...')
+
+    elif args.build:
+        wa_path = os.environ.get('WA') 
+        command = ['make', '-C', os.path.join(wa_path, 'verif/topo/mtv')]
+        subprocess.run(command)
+
+    elif args.dequeue:
+        res = runner.semaphore.dequeue()
+
+        

@@ -1,0 +1,123 @@
+/*
+ * FUSE Configuration file
+ * All __<>__ fields has special meanings.
+ */
+
+//Total fuse bank size in bits
+__FUSE_BLOCK_SIZE__ : 1024
+__FUSE_X__          : 32
+__FUSE_Y__          : 32
+
+/* ##############################################################################
+ * __FUSE_MAP__ is an ordered list of sections
+ * ##############################################################################
+ * Each section described as:
+   <section_name> : {
+       __SIZE__ : <mandatory int number dec>
+       __UNPROTECTED__ : True|False // an option to specify that section is not locked by EOM bit
+                                    // for example a field programmed section. Default is protected
+       __FIELDS__ : { //ordered list of fields
+           <field_name> : <width>|[<width>, <default value(when programmed)>]|__THE_REST__
+                      //special value of __THE_REST__ can be used only for the last field
+                      //in the section. In this case its width will be auto-calculated
+       }
+   }
+ */
+
+
+__FUSE_MAP__ : { // ordered dict
+
+    in_field_prog : {
+        __SIZE__        : 128
+        __UNPROTECTED__ : True
+        __FIELDS__ : {
+            junk_field : [1,1]
+            SPARE1     : '__THE_REST__'
+        }
+    }
+
+    fw_config : {
+        __SIZE__ : 640
+        __FIELDS__ : {
+            fuse_db_jump_to_ram                         : [1, 1]
+            fuse_db_rom_slow_clock_only                 : [1, "0x1"]
+            fuse_db_flash_dual_mode1                    : 1
+            fuse_db_sys_slow_clk                        : 1
+            fuse_auth_run_self_test                     : 1
+            fuse_auth_rsa_slow_clock                    : 1
+            fuse_auth_flash_slow_clock                  : 1
+            fuse_db_dont_switch_to_platform_source      : 1
+            wait_5ms_before_reading_tcpc_adc            : 1
+            wait_5ms_before_read_tcpc_adc_retry         : 1
+            fuse_support_db_flow                        : 1
+            fuse_sys_flash_dual_mode1                   : 1
+            fuse_self_test_rsa_slow_clock               : 1
+            fuse_enable_lc_rom_event_logger             : 1
+            fuse_db_handle_pd_task_during_auth          : 1
+            fuse_platform_power_switch_extra_delay      : 1
+            fuse_enable_ite_hv_ldo_power_down_flow      : 1
+            fuse_enable_ovp_alarms                      : 1
+            fuse_send_hard_reset_on_ovp_event           : 1
+            fuse_send_alert_on_ovp_event                : 1
+            fuse_db_use_battery_pdo                     : 1
+            fuse_db_send_reset_tx_buffer_before_hr      : 1
+            SPARE1 : '__THE_REST__'
+        }
+    }
+
+    proc_mon : {
+        __SIZE__ : 64
+        __FIELDS__ : {
+            svt_counter     : 12
+            nlvt_counter    : 12
+            SPARE1          : '__THE_REST__'
+        }
+    }
+
+    calibration : {
+        __SIZE__    : 64
+        __FIELDS__  : {
+            SPARE1  : '__THE_REST__'
+        }
+    }
+
+    production : {
+        __SIZE__ : 128
+        __FIELDS__ : {
+            FAB                                 : [2, "0x10"]
+            YEAR                                : [4, 3]
+            WW                                  : 6
+            X-sgn                               : 1
+            X                                   : 6
+            Y-sgn                               : 1
+            Y                                   : 6
+            WAFER                               : 5
+            LOT                                 : 26
+            SPARE1                              : 5
+            RevID                               : 3
+            SPARE2                              : 2
+            PARITY                              : 1
+            VALID_ULT                           : 1
+            SPARE3                              : 3
+            ADPT_POWER_TRIM                     : 4
+            SPARE4                              : 4
+            ORIG_POWER_TRIM                     : 4
+            INVISIBLE_RevID                     : 3
+            SKU_LOT                             : 3
+            EXT_SVR_SCALING                     : 3
+            lc_uctrl_high_freq_fuse_en          : [1, 1]
+            SPARE5                              : 1
+            FUSE_LOCK                           : [1, 1]
+            fuse_force_secure_en                : [1, 1]
+            IFP_START_ADDR                      : [5, "0x1A"]
+            DUAL_CONFIG                         : [2, 3]
+            disable_full_freq_in_flashless      : [1, 0]
+            SPARE6                              : 7
+            XTAL_EXISTS                         : 1
+            LC_RESERVED                         : 5
+            SPECIAL_OSC_PARITY                  : 1
+            SPECIAL_OSC_VALID                   : 1
+            SPECIAL_OSC_CALIB_VALUE             : 8
+        }
+    }
+}
