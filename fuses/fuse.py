@@ -6,7 +6,7 @@ import hjson
 import re
 import logging
 
-from mtv.py.fuses.fuse_formatters import *
+from utils.fuses.fuse_formatters import *
 
 class fuse (object):
 

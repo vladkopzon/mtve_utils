@@ -5,7 +5,7 @@ import array
 import time
 import logging
 
-from mtv.py.mtv_imports import *
+from utils.mtvelib.mtv_imports import *
 
 class mmi_connector(object):
 

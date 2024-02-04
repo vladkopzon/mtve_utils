@@ -1,7 +1,7 @@
 import logging
 import simpy
-from mtv.py.mtv_xtor    import *
-from mtv.py.mtv_imports import *
+from utils.mtvelib.mtv_xtor    import *
+from utils.mtvelib.mtv_imports import *
 
 class GPIO_OPCODE(Enum):
     SET_H_GPIO            = 0x32

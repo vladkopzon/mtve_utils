@@ -7,8 +7,8 @@ import random
 
 sys.path.append(os.environ.get("COMMON_UTIL") + "/sys_pkgs")
 import simpy
-from mtv.py.mtv_xtor   import *
-from mtv.py.mtv_imports import *
+from utils.mtvelib.mtv_xtor   import *
+from utils.mtvelib.mtv_imports import *
 from simpy.events import AnyOf, AllOf, Event
 from simpy import Store
 

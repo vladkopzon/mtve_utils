@@ -9,8 +9,8 @@ sys.path.append(mtv_lib + "/" + crun_envdir)
 
 from mtve_headers import *
 
-from mtv.py.fuses.fuse    import *
-from mtv.py.regs.regs     import *
+from utils.fuses.fuse    import *
+from utils.regs.regs     import *
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.ERROR)

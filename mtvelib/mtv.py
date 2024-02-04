@@ -7,15 +7,15 @@ import bisect
 sys.path.append(os.environ.get("COMMON_UTIL") + "/sys_pkgs")
 import simpy
 
-from mtv.py.mtv_imports   import *
-from mtv.py.mmi_connector import *
-from mtv.py.mtv_xtor      import *
-from mtv.py.mtv_sys_xtor  import *
-from mtv.py.mtv_dut_xtor  import *
-from mtv.py.mtv_gpio_xtor import *
-from mtv.py.mtv_jtag_xtor import *
-from mtv.py.mtv_i2c_xtor  import *
-from mtv.py.mtv_lsx_xtor  import *
+from utils.mtvelib.mtv_imports   import *
+from utils.mtvelib.mmi_connector import *
+from utils.mtvelib.mtv_xtor      import *
+from utils.mtvelib.mtv_sys_xtor  import *
+from utils.mtvelib.mtv_dut_xtor  import *
+from utils.mtvelib.mtv_gpio_xtor import *
+from utils.mtvelib.mtv_jtag_xtor import *
+from utils.mtvelib.mtv_i2c_xtor  import *
+from utils.mtvelib.mtv_lsx_xtor  import *
 
 
 class mtv (object):

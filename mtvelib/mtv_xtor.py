@@ -4,7 +4,7 @@ import sys
 
 sys.path.append(os.environ.get("COMMON_UTIL") + "/sys_pkgs")
 import simpy
-from mtv.py.mtv_imports import *
+from utils.mtvelib.mtv_imports import *
 
 class mtv_xtor(object):
     def __init__(self, mtv, xtor_id, name):
